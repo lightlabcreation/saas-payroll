@@ -26,6 +26,9 @@ const loginSchema = Joi.object({
   password: Joi.string().required().messages({
     'string.empty': 'Password is required',
   }),
+  recaptchaToken: Joi.string().required().messages({
+    'string.empty': 'reCAPTCHA token is required',
+  }),
 });
 
 const refreshTokenSchema = Joi.object({

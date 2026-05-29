@@ -1,13 +1,9 @@
 const { generateTokens, verifyToken } = require('../utils/jwt');
 const db = require('../config/mysql');
 const bcrypt = require('bcrypt');
-const svgCaptcha = require('svg-captcha');
+const axios = require('axios');
 const crypto = require('crypto');
 const { getLoginRedirect, getDashboardRoute } = require('../middlewares/role.middleware');
-
-// Temporary in-memory store for CAPTCHAs (In production, use Redis)
-// Format: { 'uuid': { text: 'abcd', expiresAt: 123456789 } }
-global.captchaStore = global.captchaStore || {};
 
 /**
  * Register a new user
@@ -141,71 +137,37 @@ const register = async (req, res, next) => {
 };
 
 /**
- * Generate CAPTCHA
- */
-const getCaptcha = (req, res) => {
-  const captcha = svgCaptcha.create({
-    size: 5,
-    ignoreChars: '0o1il',
-    noise: 2,
-    color: true,
-    background: '#0f172a',
-  });
-
-  const token = crypto.randomUUID();
-  
-  // Store the answer with an expiration of 5 minutes
-  global.captchaStore[token] = {
-    text: captcha.text.toLowerCase(),
-    expiresAt: Date.now() + 5 * 60 * 1000,
-  };
-
-  // Clean up expired captchas
-  Object.keys(global.captchaStore).forEach(k => {
-    if (global.captchaStore[k].expiresAt < Date.now()) {
-      delete global.captchaStore[k];
-    }
-  });
-
-  res.status(200).json({
-    success: true,
-    token: token,
-    svg: captcha.data
-  });
-};
-
-/**
  * Standard User Login (For Employers/Employees/Managers)
  */
 const login = async (req, res, next) => {
   try {
-    const { email, password, captchaToken, captchaAnswer } = req.body;
+    const { email, password, recaptchaToken } = req.body;
 
-    // Validate CAPTCHA
-    if (!captchaToken || !captchaAnswer) {
+    // Validate reCAPTCHA
+    if (!recaptchaToken) {
       return res.status(400).json({
         success: false,
-        message: 'CAPTCHA is required.',
+        message: 'reCAPTCHA token is required.',
       });
     }
 
-    const storedCaptcha = global.captchaStore[captchaToken];
-    if (!storedCaptcha) {
-      return res.status(400).json({
+    try {
+      const secretKey = process.env.RECAPTCHA_SECRET_KEY || '6LdsnwItAAAAAAY8cvmiwCrhwm-OQLAmDNdE51Db';
+      const recaptchaResponse = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`);
+      
+      if (!recaptchaResponse.data.success) {
+        return res.status(400).json({
+          success: false,
+          message: 'reCAPTCHA verification failed. Please try again.',
+        });
+      }
+    } catch (captchaError) {
+      console.error('[CAPTCHA VERIFY ERROR]', captchaError);
+      return res.status(500).json({
         success: false,
-        message: 'CAPTCHA expired or invalid. Please refresh.',
+        message: 'Error verifying reCAPTCHA.',
       });
     }
-
-    if (storedCaptcha.text !== captchaAnswer.toLowerCase()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid CAPTCHA answer.',
-      });
-    }
-
-    // Clear captcha so it can't be reused
-    delete global.captchaStore[captchaToken];
 
     // Validate input
     if (!email || !password) {
@@ -502,7 +464,6 @@ const forgotPassword = async (req, res, next) => {
 };
 
 module.exports = {
-  getCaptcha,
   register,
   login,
   adminLogin,

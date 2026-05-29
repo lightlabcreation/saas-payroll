@@ -5,7 +5,6 @@ const { validateRegister, validateLogin, validateRefreshToken } = require('../va
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 // Public routes
-router.get('/captcha', authController.getCaptcha);
 router.post('/register', validateRegister, authController.register); // Enabled public registration
 router.post('/login', validateLogin, authController.login);
 router.post('/admin/login', validateLogin, authController.adminLogin);
