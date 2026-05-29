@@ -152,7 +152,7 @@ const login = async (req, res, next) => {
     }
 
     try {
-      const secretKey = process.env.RECAPTCHA_SECRET_KEY || '6LdsnwItAAAAAAY8cvmiwCrhwm-OQLAmDNdE51Db';
+      const secretKey = process.env.RECAPTCHA_SECRET_KEY || '6LdiqQItAAAAALpwzi0yf863q0QXJ3JGrZVaVEwW';
       const recaptchaResponse = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`);
       
       if (!recaptchaResponse.data.success) {
