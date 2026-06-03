@@ -141,33 +141,7 @@ const register = async (req, res, next) => {
  */
 const login = async (req, res, next) => {
   try {
-    const { email, password, recaptchaToken } = req.body;
-
-    // Validate reCAPTCHA
-    if (!recaptchaToken) {
-      return res.status(400).json({
-        success: false,
-        message: 'reCAPTCHA token is required.',
-      });
-    }
-
-    try {
-      const secretKey = process.env.RECAPTCHA_SECRET_KEY || '6LdiqQItAAAAALpwzi0yf863q0QXJ3JGrZVaVEwW';
-      const recaptchaResponse = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${recaptchaToken}`);
-      
-      if (!recaptchaResponse.data.success) {
-        return res.status(400).json({
-          success: false,
-          message: 'reCAPTCHA verification failed. Please try again.',
-        });
-      }
-    } catch (captchaError) {
-      console.error('[CAPTCHA VERIFY ERROR]', captchaError);
-      return res.status(500).json({
-        success: false,
-        message: 'Error verifying reCAPTCHA.',
-      });
-    }
+    const { email, password } = req.body;
 
     // Validate input
     if (!email || !password) {
