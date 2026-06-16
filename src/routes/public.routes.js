@@ -18,4 +18,7 @@ router.put('/company-request/:id/payment-status', publicController.updateCompany
 // User registration request
 router.post('/user-request', publicController.createRequest);
 
+// Public support ticket request (from login help modal)
+router.post('/support-ticket', publicController.createPublicSupportTicket);
+
 module.exports = router;

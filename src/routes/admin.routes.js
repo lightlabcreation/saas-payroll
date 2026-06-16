@@ -53,9 +53,12 @@ router.delete('/vendors/:id', adminController.deleteVendor);
 
 // Plan & Subscription
 router.post('/purchase-plan', adminController.purchasePlan);
+router.post('/razorpay/create-order', adminController.createRazorpayOrder);
+router.post('/razorpay/verify-payment', adminController.verifyRazorpayPayment);
 router.get('/subscription', adminController.getMySubscription);
 router.get('/subscription/status', adminController.getSubscriptionStatus); // New route
 router.get('/payments', adminController.getMyPayments);
+router.get('/company-profile', adminController.getCompanyProfile);
 
 // Job Portal (Admin)
 router.get('/jobs', adminController.getAllJobs);

@@ -1,6 +1,16 @@
 const db = require('../config/mysql'); // Pure MySQL pool
 const paymentService = require('../services/payment.service');
 const bcrypt = require('bcrypt');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const axios = require('axios');
+
+// Initialize Razorpay instance
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_T1r8sgDPyFz1bB',
+  key_secret: process.env.RAZORPAY_KEY_SECRET || 'GBL1GdG1iHJWvDEFkvDyG0Bf',
+});
+
 
 
 /**
@@ -16,6 +26,40 @@ const getDashboard = async (req, res, next) => {
     const [vendorCount] = await db.query('SELECT COUNT(*) as count FROM vendors v JOIN users u ON v.user_id = u.id WHERE u.company_id = ?', [adminCompanyId]);
     const [activeEmployerCount] = await db.query("SELECT COUNT(*) as count FROM employers WHERE status = 'active' AND company_id = ?", [adminCompanyId]);
 
+    // TRIAL AND SUBSCRIPTION CHECKS
+    let hasActiveSubscription = false;
+    let subscriptionExpiry = null;
+    let isTrial = false;
+    let trialDaysLeft = null;
+    
+    // Get company details
+    const [adminRows] = await db.query('SELECT id FROM admins WHERE user_id = ? LIMIT 1', [req.user.id]);
+    if (adminRows.length > 0) {
+      const [compRows] = await db.query('SELECT id, created_at FROM companies WHERE admin_id = ? LIMIT 1', [adminRows[0].id]);
+      if (compRows.length > 0) {
+        const companyId = compRows[0].id;
+        const companyCreatedAt = compRows[0].created_at;
+
+        // Check active subscription in subscriptions table
+        const [subRows] = await db.query(
+          'SELECT end_date FROM subscriptions WHERE employer_id = ? AND status = "active" AND end_date >= NOW() LIMIT 1',
+          [companyId]
+        );
+        if (subRows.length > 0) {
+          hasActiveSubscription = true;
+          subscriptionExpiry = subRows[0].end_date;
+        } else if (companyCreatedAt) {
+          // If no active sub, they are trialing
+          isTrial = true;
+          const createdDate = new Date(companyCreatedAt);
+          const now = new Date();
+          const diffTime = Math.max(0, now - createdDate);
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          trialDaysLeft = Math.max(0, 10 - diffDays);
+        }
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -25,6 +69,12 @@ const getDashboard = async (req, res, next) => {
           totalVendors: vendorCount[0].count,
           activeEmployers: activeEmployerCount[0].count,
         },
+        trialInfo: {
+          isTrial,
+          trialDaysLeft,
+          hasActiveSubscription,
+          subscriptionExpiry
+        }
       },
     });
   } catch (error) {
@@ -800,9 +850,9 @@ const createEmployee = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const [userResult] = await connection.query(
-      `INSERT INTO users(name, email, password, role, status, created_at, updated_at)
-    VALUES(?, ?, ?, 'employee', 'active', NOW(), NOW())`,
-      [name, email, hashedPassword]
+      `INSERT INTO users(name, email, password, role, company_id, status, created_at, updated_at)
+    VALUES(?, ?, ?, 'employee', ?, 'active', NOW(), NOW())`,
+      [name, email, hashedPassword, employer_id]
     );
     const userId = userResult.insertId;
 
@@ -1231,6 +1281,223 @@ const purchasePlan = async (req, res, next) => {
 
   } catch (error) {
     if (connection) await connection.rollback();
+    next(error);
+  } finally {
+    if (connection) connection.release();
+  }
+};
+
+/**
+ * Create Razorpay Order
+ */
+const createRazorpayOrder = async (req, res, next) => {
+  try {
+    const { plan_id } = req.body;
+    const adminId = req.user.id;
+
+    // 1. Get Employer
+    let employerId = req.user.company_id;
+    let employer = null;
+    if (employerId) {
+      const [empRows] = await db.query('SELECT * FROM employers WHERE id = ?', [employerId]);
+      if (empRows.length > 0) employer = empRows[0];
+    } else {
+      const [adminRows] = await db.query('SELECT id FROM admins WHERE user_id = ?', [adminId]);
+      if (adminRows.length > 0) {
+        const [empRows] = await db.query('SELECT * FROM employers WHERE admin_id = ?', [adminRows[0].id]);
+        if (empRows.length > 0) employer = empRows[0];
+      }
+    }
+
+    if (!employer) {
+      return res.status(404).json({ success: false, message: 'Company not found for this admin.' });
+    }
+
+    // 2. Get Plan
+    const [planRows] = await db.query('SELECT * FROM plans WHERE id = ? AND is_active = 1', [plan_id]);
+    const plan = planRows[0];
+    if (!plan) {
+      return res.status(404).json({ success: false, message: 'Plan not found or inactive.' });
+    }
+
+    // Standard INR checkouts requirement: Amount in INR (USD * 80) in paise
+    const usdAmount = parseFloat(plan.price);
+    const inrAmount = Math.round(usdAmount * 80);
+    const amountInPaise = inrAmount * 100;
+
+    if (amountInPaise <= 0) {
+      return res.status(400).json({ success: false, message: 'Cannot purchase a free plan through Razorpay payment.' });
+    }
+
+    const options = {
+      amount: amountInPaise,
+      currency: 'INR',
+      receipt: `rcpt_${Date.now()}_${employer.id}`,
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    res.json({
+      success: true,
+      order,
+      plan: {
+        id: plan.id,
+        name: plan.name,
+        price: plan.price
+      }
+    });
+
+  } catch (error) {
+    console.error('Razorpay Create Order Error:', error);
+    next(error);
+  }
+};
+
+/**
+ * Verify Razorpay Payment and activate subscription
+ */
+const verifyRazorpayPayment = async (req, res, next) => {
+  const connection = await db.getConnection();
+  await connection.beginTransaction();
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_id } = req.body;
+    const adminId = req.user.id;
+    const ipAddress = req.ip;
+
+    // Verify signature
+    const secret = process.env.RAZORPAY_KEY_SECRET || 'GBL1GdG1iHJWvDEFkvDyG0Bf';
+    const shasum = crypto.createHmac('sha256', secret);
+    shasum.update(`${razorpay_order_id}|${razorpay_payment_id}`);
+    const digest = shasum.digest('hex');
+
+    if (digest !== razorpay_signature) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Payment verification failed: invalid signature.' });
+    }
+
+    // 1. Get Employer
+    let employerId = req.user.company_id;
+    let employer = null;
+    if (employerId) {
+      const [empRows] = await connection.query('SELECT * FROM employers WHERE id = ?', [employerId]);
+      if (empRows.length > 0) employer = empRows[0];
+    } else {
+      const [adminRows] = await connection.query('SELECT id FROM admins WHERE user_id = ?', [adminId]);
+      if (adminRows.length > 0) {
+        const [empRows] = await connection.query('SELECT * FROM employers WHERE admin_id = ?', [adminRows[0].id]);
+        if (empRows.length > 0) employer = empRows[0];
+      }
+    }
+
+    if (!employer) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Company not found for this admin.' });
+    }
+
+    // 2. Get Plan
+    const [planRows] = await connection.query('SELECT * FROM plans WHERE id = ? AND is_active = 1', [plan_id]);
+    const plan = planRows[0];
+    if (!plan) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Plan not found or inactive.' });
+    }
+
+    const amount = parseFloat(plan.price);
+
+    // 3. Create Invoice
+    const invoiceNumber = `INV-${Date.now()}-${employer.id}`;
+    const [invDetails] = await connection.query(
+      `INSERT INTO invoices(invoice_number, employer_id, plan_id, amount, tax_amount, total_amount, due_date, status, notes, created_at, updated_at)
+       VALUES(?, ?, ?, ?, 0, ?, NOW(), 'paid', ?, NOW(), NOW())`,
+      [invoiceNumber, employer.id, plan.id, amount, amount, `Plan purchase via Razorpay: ${plan.name}`]
+    );
+    const invoiceId = invDetails.insertId;
+
+    // 4. Create Payment Record
+    const [payDetails] = await connection.query(
+      `INSERT INTO payments(invoice_id, employer_id, amount, payment_method, status, payment_date, transaction_id, created_at, updated_at)
+       VALUES(?, ?, ?, 'razorpay', 'success', NOW(), ?, NOW(), NOW())`,
+      [invoiceId, employer.id, amount, razorpay_payment_id]
+    );
+
+    // 5. Manage Subscription
+    // Expire current active subscription
+    await connection.query(
+      "UPDATE subscriptions SET status = 'expired', updated_at = NOW() WHERE employer_id = ? AND status = 'active'",
+      [employer.id]
+    );
+
+    // Create new Subscription
+    const startDate = new Date();
+    const endDate = new Date(startDate);
+    const months = plan.duration_months || 0;
+    endDate.setMonth(endDate.getMonth() + months);
+
+    const [subDetails] = await connection.query(
+      `INSERT INTO subscriptions(employer_id, plan_id, start_date, end_date, status, auto_renew, created_at, updated_at)
+       VALUES(?, ?, ?, ?, 'active', 0, NOW(), NOW())`,
+      [employer.id, plan.id, startDate, endDate]
+    );
+    const subscriptionId = subDetails.insertId;
+
+    // Link subscription to invoice
+    await connection.query('UPDATE invoices SET subscription_id = ? WHERE id = ?', [subscriptionId, invoiceId]);
+
+    // Update employer current plan name
+    await connection.query('UPDATE employers SET subscription_plan = ? WHERE id = ?', [plan.name, employer.id]);
+
+    // Sync to Master Database
+    try {
+      // Find the admin user email for this employer
+      const [adminRows] = await connection.query(
+        'SELECT email FROM users WHERE company_id = ? AND role = "admin" LIMIT 1',
+        [employer.company_id || employer.id]
+      );
+      if (adminRows.length > 0) {
+        const adminEmail = adminRows[0].email;
+        const durationDays = (plan.duration_months || 1) * 30; // convert months to days approximately
+        const masterApiUrl = process.env.SUPERADMIN_API_URL || 'http://localhost:5000/api';
+        
+        await axios.post(`${masterApiUrl}/master/upgrade-subscription`, {
+          email: adminEmail,
+          plan: plan.name,
+          planPrice: amount,
+          durationDays: durationDays
+        }, {
+          headers: {
+            'x-internal-api-key': process.env.INTERNAL_API_KEY || 'kiaan_internal_secret_2026'
+          }
+        });
+        console.log(`[PAYMENT_SYNC] Synced subscription upgrade to Master for admin: ${adminEmail}`);
+      }
+    } catch (syncErr) {
+      console.error('[PAYMENT_SYNC] Failed to sync subscription upgrade to Master database:', syncErr.message);
+    }
+
+    // 6. Audit Log
+    await connection.query(
+      'INSERT INTO audit_logs (user_id, action, details, ip_address) VALUES (?, ?, ?, ?)',
+      [req.user.id, 'PLAN_PURCHASED', `Purchased plan ${plan.name} (${plan_id}) via Razorpay. Order: ${razorpay_order_id}, Payment: ${razorpay_payment_id}`, ipAddress]
+    );
+
+    await connection.commit();
+
+    const [newSub] = await connection.query('SELECT * FROM subscriptions WHERE id = ?', [subscriptionId]);
+    const [newPay] = await connection.query('SELECT * FROM payments WHERE id = ?', [payDetails.insertId]);
+
+    res.json({
+      success: true,
+      message: 'Plan purchased and activated successfully.',
+      data: {
+        subscription: newSub[0],
+        payment: newPay[0],
+        invoice: { id: invoiceId, invoice_number: invoiceNumber }
+      }
+    });
+
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Razorpay Verify Payment Controller Error:', error);
     next(error);
   } finally {
     if (connection) connection.release();
@@ -2398,10 +2665,40 @@ const toggleUserStatus = async (req, res, next) => {
   }
 };
 
+const getCompanyProfile = async (req, res, next) => {
+  try {
+    let adminCompanyId = req.user.company_id;
+
+    if (!adminCompanyId) {
+      const [adminRows] = await db.query('SELECT id FROM admins WHERE user_id = ? LIMIT 1', [req.user.id]);
+      if (adminRows.length > 0) {
+        const [compRows] = await db.query('SELECT id FROM companies WHERE admin_id = ? LIMIT 1', [adminRows[0].id]);
+        if (compRows.length > 0) {
+          adminCompanyId = compRows[0].id;
+        }
+      }
+    }
+
+    if (!adminCompanyId) {
+      return res.status(404).json({ success: false, message: 'Company not found.' });
+    }
+
+    const [rows] = await db.query('SELECT * FROM companies WHERE id = ?', [adminCompanyId]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Company details not found.' });
+    }
+
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getDashboard,
   getDashboardSummary,
   getEmployers,
+  getCompanyProfile,
   // getEmployees, // Removed
   getTransactions,
   deleteTransaction,
@@ -2430,6 +2727,8 @@ module.exports = {
   getPaymentSetups,
   updatePaymentSetup,
   purchasePlan,
+  createRazorpayOrder,
+  verifyRazorpayPayment,
   getMySubscription,
   getMyPayments,
   getSubscriptionStatus,

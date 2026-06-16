@@ -16,6 +16,7 @@ const creditRoutes = require('./routes/credit.routes');
 const jobseekerRoutes = require('./routes/jobseeker.routes');
 const profileRoutes = require('./routes/profile.routes');
 const internalRoutes = require('./routes/internal.routes');
+const supportRoutes = require('./routes/support.routes');
 
 
 const app = express();
@@ -72,6 +73,7 @@ app.use('/api/profile', profileRoutes);
 // Internal service-to-service routes (Super Admin → Payroll)
 // Protected by x-internal-api-key header — NOT for public use
 app.use('/api/internal', internalRoutes);
+app.use('/api/support', supportRoutes);
 
 // 404 handler
 app.use((req, res) => {

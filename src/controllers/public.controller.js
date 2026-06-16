@@ -1,4 +1,5 @@
 const db = require('../config/mysql');
+const axios = require('axios');
 
 /**
  * Get All Jobs (Public)
@@ -288,11 +289,128 @@ const createRequest = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+/**
+ * Create Support Ticket from Public Login Page
+ */
+const createPublicSupportTicket = async (req, res, next) => {
+  try {
+    const { email, subject, description, category = 'General Support' } = req.body;
+
+    if (!email || !subject || !description) {
+      return res.status(400).json({ success: false, message: 'Email, Subject, and Description are required.' });
+    }
+
+    // 1. Check if user exists to link the ticket
+    const [userRows] = await db.query('SELECT id, role FROM users WHERE email = ? LIMIT 1', [email.toLowerCase()]);
+    
+    let userId = 0;
+    let userRole = 'public';
+    let companyId = 0;
+    let companyName = 'Public Inquiry';
+
+    if (userRows.length > 0) {
+      userId = userRows[0].id;
+      userRole = userRows[0].role?.toLowerCase() || '';
+
+      // Fetch company details
+      try {
+        if (userRole === 'admin') {
+          const [rows] = await db.query('SELECT id as company_id, company_name FROM companies WHERE user_id = ? LIMIT 1', [userId]);
+          if (rows.length > 0) {
+            companyId = rows[0].company_id;
+            companyName = rows[0].company_name;
+          }
+        } else if (userRole === 'employer') {
+          const [rows] = await db.query('SELECT company_id, company_name FROM employers WHERE user_id = ? LIMIT 1', [userId]);
+          if (rows.length > 0) {
+            companyId = rows[0].company_id;
+            companyName = rows[0].company_name;
+          }
+        } else if (userRole === 'employee') {
+          const [rows] = await db.query(`
+            SELECT emp.company_id, emp.company_name 
+            FROM employees e 
+            JOIN employers emp ON e.employer_id = emp.id 
+            WHERE e.user_id = ? LIMIT 1
+          `, [userId]);
+          if (rows.length > 0) {
+            companyId = rows[0].company_id;
+            companyName = rows[0].company_name;
+          }
+        } else if (userRole === 'vendor') {
+          const [rows] = await db.query('SELECT company_id, company_name FROM vendors WHERE user_id = ? LIMIT 1', [userId]);
+          if (rows.length > 0) {
+            companyId = rows[0].company_id;
+            companyName = rows[0].company_name;
+          }
+        }
+      } catch (err) {
+        console.error('[PUBLIC_SUPPORT] Error fetching company details:', err);
+      }
+    }
+
+    const ticketNumber = 'TKT-PUB-' + Date.now().toString().slice(-6) + '-' + Math.floor(100 + Math.random() * 900);
+
+    // Save ticket in Payroll DB
+    const [ticketResult] = await db.query(
+      `INSERT INTO support_tickets (ticket_number, company_id, company_name, project_name, user_id, subject, category, priority, description, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'Medium', ?, 'Open', NOW(), NOW())`,
+      [ticketNumber, companyId, companyName, 'Payroll SaaS', userId, `[Public Form] ${subject}`, category, `Sender Email: ${email}\n\n${description}`]
+    );
+    const ticketId = ticketResult.insertId;
+
+    // Save first message in ticket_messages
+    await db.query(
+      `INSERT INTO ticket_messages (ticket_id, sender_type, sender_id, message, created_at)
+       VALUES (?, 'client', ?, ?, NOW())`,
+      [ticketId, userId, `Sender: ${email}\nMessage: ${description}`]
+    );
+
+    // Sync to Super Admin Backend
+    let superadminSynced = false;
+    try {
+      const saUrl = `${process.env.SUPERADMIN_API_URL || 'http://localhost:5000/api'}/support/create-ticket`;
+      const saBody = {
+        ticketNumber,
+        companyId,
+        companyName,
+        userId,
+        subject: `[Public Ticket] ${subject}`,
+        category,
+        priority: 'Medium',
+        description: `Submitted by: ${email}\n\n${description}`,
+        projectName: 'Payroll SaaS'
+      };
+      const response = await axios.post(saUrl, saBody, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-api-key': process.env.INTERNAL_API_KEY || 'kiaan_internal_secret_2026'
+        },
+        timeout: 5000
+      });
+      if (response.data.success) {
+        superadminSynced = true;
+      }
+    } catch (err) {
+      console.error('[PUBLIC_SUPPORT] Failed to sync ticket to Super Admin (non-fatal):', err.message);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Support request submitted successfully.',
+      ticketNumber
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getAllJobs,
   getJobById,
   getActivePlans,
   createCompanyRequest,
   updateCompanyRequestPaymentStatus,
-  createRequest
+  createRequest,
+  createPublicSupportTicket
 };

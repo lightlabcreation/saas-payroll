@@ -205,37 +205,58 @@ const login = async (req, res, next) => {
     }
 
     // --- Verify Master Subscription ---
-    try {
-      let employerEmail = user.email;
-      if (user.role !== 'employer' && user.company_id) {
-        const [empRows] = await db.query('SELECT user_id FROM employers WHERE id = ?', [user.company_id]);
-        if (empRows.length > 0) {
-          const [uRows] = await db.query('SELECT email FROM users WHERE id = ?', [empRows[0].user_id]);
-          if (uRows.length > 0) {
-            employerEmail = uRows[0].email;
+    if (user.role !== 'jobseeker' && !(user.role === 'vendor' && !user.company_id)) {
+      try {
+        let tenantAdminEmail = user.email;
+        let tenantCompanyId = null;
+
+        if (user.role === 'admin') {
+          tenantAdminEmail = user.email;
+        } else if (user.role === 'employee' || user.role === 'vendor') {
+          // Get the employer's tenant company_id
+          const [empRows] = await db.query('SELECT company_id FROM employers WHERE id = ?', [user.company_id]);
+          if (empRows.length > 0) {
+            tenantCompanyId = empRows[0].company_id;
+          }
+        } else {
+          // For employer, etc.
+          tenantCompanyId = user.company_id;
+        }
+
+        if (tenantCompanyId) {
+          // Find the admin user email for this tenant company
+          const [adminRows] = await db.query(
+            'SELECT email FROM users WHERE company_id = ? AND role = "admin" LIMIT 1',
+            [tenantCompanyId]
+          );
+          if (adminRows.length > 0) {
+            tenantAdminEmail = adminRows[0].email;
           }
         }
-      }
-      
-      const masterApiUrl = process.env.SUPERADMIN_API_URL || 'http://localhost:5000/api';
-      const verifyRes = await fetch(`${masterApiUrl}/master/verify-subscription?email=${encodeURIComponent(employerEmail)}`);
-      
-      if (!verifyRes.ok) {
-        const verifyData = await verifyRes.json();
-        return res.status(403).json({
+
+        console.log(`[LOGIN] Verifying subscription for tenant admin: ${tenantAdminEmail} (Logging user: ${user.email})`);
+
+        const masterApiUrl = process.env.SUPERADMIN_API_URL || 'http://localhost:5000/api';
+        const verifyRes = await fetch(`${masterApiUrl}/master/verify-subscription?email=${encodeURIComponent(tenantAdminEmail)}`);
+        
+        if (!verifyRes.ok) {
+          const verifyData = await verifyRes.json();
+          return res.status(403).json({
+            success: false,
+            message: verifyData.message || 'Company subscription has expired or is invalid.',
+          });
+        }
+      } catch (err) {
+        console.error('[LOGIN] Error verifying subscription:', err.message);
+        // Depending on strictness, we might want to block or allow if Master backend is down.
+        // We will block to be safe.
+        return res.status(500).json({
           success: false,
-          message: verifyData.message || 'Company subscription has expired or is invalid.',
+          message: 'Unable to verify subscription status.',
         });
       }
-    } catch (err) {
-      console.error('[LOGIN] Error verifying subscription:', err.message);
-      // Depending on strictness, we might want to block or allow if Master backend is down.
-      // We will block to be safe.
-      return res.status(500).json({
-        success: false,
-        message: 'Unable to verify subscription status.',
-      });
     }
+    // ----------------------------------
     // ----------------------------------
 
     // Update last login

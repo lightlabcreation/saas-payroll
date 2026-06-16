@@ -85,14 +85,14 @@ const authenticate = async (req, res, next) => {
       }
     }
 
-    // 7-DAY TRIAL CHECK
+    // 10-DAY TRIAL CHECK
     if (targetEmployerId && targetCreatedAt) {
       const createdDate = new Date(targetCreatedAt);
       const now = new Date();
       const diffTime = Math.abs(now - createdDate);
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-      if (diffDays > 7) {
+      if (diffDays > 10) {
         // Trial is over. Check for active subscription
         const [subRows] = await db.execute(
           'SELECT * FROM subscriptions WHERE employer_id = ? AND status = "active" AND end_date >= NOW() LIMIT 1', 
@@ -108,13 +108,15 @@ const authenticate = async (req, res, next) => {
                                  path.includes('/plans') || 
                                  path.includes('/payments') || 
                                  path.includes('/payment-status') ||
-                                 path.includes('/auth');
+                                 path.includes('/auth') ||
+                                 path.includes('/razorpay') ||
+                                 path.includes('/purchase-plan');
           
           if (!isBillingRoute) {
             return res.status(403).json({
               success: false,
               code: 'TRIAL_EXPIRED',
-              message: 'Your 7-Day Free Trial has expired. Please purchase a plan to continue.',
+              message: 'Your 10-Day Free Trial has expired. Please purchase a plan to continue.',
             });
           }
         }

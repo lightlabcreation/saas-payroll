@@ -757,11 +757,11 @@ const addEmployee = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insert into users table
-    // Using company_id from employer record
+    // Using employer.id as company_id for the user
     const [userResult] = await connection.execute(
       `INSERT INTO users(name, email, password, phone, role, company_id, status, created_at, updated_at)
 VALUES(?, ?, ?, ?, 'employee', ?, 'active', NOW(), NOW())`,
-      [name, email, hashedPassword, phone, employer.company_id]
+      [name, email, hashedPassword, phone, employer.id]
     );
     const userId = userResult.insertId;
 
@@ -769,7 +769,7 @@ VALUES(?, ?, ?, ?, 'employee', ?, 'active', NOW(), NOW())`,
     const [empResult] = await connection.execute(
       `INSERT INTO employees(user_id, employer_id, company_id, designation, salary, joining_date, status, created_at, updated_at)
 VALUES(?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
-      [userId, employer.id, employer.company_id, finalJobTitle, salary || 0, joining_date]
+      [userId, employer.id, employer.id, finalJobTitle, salary || 0, joining_date]
     );
 
     await connection.commit();
@@ -960,9 +960,9 @@ const getMyVendors = async (req, res, next) => {
         SELECT v.*, v.service_type as services, v.salary, v.joining_date, u.name as u_name, u.email as u_email, u.phone as u_phone, u.status as u_status 
         FROM vendors v
         JOIN users u ON v.user_id = u.id
-        WHERE v.company_id = ? AND (v.employer_id = ? OR v.employer_id IS NULL)
+        WHERE v.company_id = ? OR v.employer_id = ?
   ORDER BY v.created_at DESC
-    `, [employer.company_id, employer.id]);
+    `, [employer.id, employer.id]);
 
     const formatted = vendors.map(v => ({
       ...v,
@@ -1031,7 +1031,7 @@ const addVendor = async (req, res, next) => {
     const [userResult] = await connection.execute(
       `INSERT INTO users(name, email, password, phone, role, company_id, status, created_at, updated_at)
 VALUES(?, ?, ?, ?, 'vendor', ?, 'active', NOW(), NOW())`,
-      [name, email, hashedPassword, phone, employer.company_id]
+      [name, email, hashedPassword, phone, employer.id]
     );
     const userId = userResult.insertId;
 
@@ -1040,7 +1040,7 @@ VALUES(?, ?, ?, ?, 'vendor', ?, 'active', NOW(), NOW())`,
     const [vendorResult] = await connection.execute(
       `INSERT INTO vendors(user_id, company_id, employer_id, company_name, contact_person, phone, email, service_type, salary, joining_date, status, created_at, updated_at)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', NOW(), NOW())`,
-      [userId, employer.company_id, employer.id, name, name, phone, email, finalJobTitle, salary || 0, joining_date]
+      [userId, employer.id, employer.id, name, name, phone, email, finalJobTitle, salary || 0, joining_date]
     );
 
     await connection.commit();

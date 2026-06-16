@@ -15,6 +15,7 @@ const express = require('express');
 const router = express.Router();
 const { internalAuth } = require('../middlewares/internal.middleware');
 const internalController = require('../controllers/internal.controller');
+const supportController = require('../controllers/support.controller');
 
 // Apply internal API key auth to ALL routes in this file
 router.use(internalAuth);
@@ -32,5 +33,11 @@ router.post('/provision-company', internalController.provisionCompany);
  * Called by Super Admin backend on toggleStatus or blockUser
  */
 router.put('/companies/:id/status', internalController.syncCompanyStatus);
+
+/**
+ * POST /api/internal/support/sync
+ * Sync support ticket replies and status changes from Super Admin
+ */
+router.post('/support/sync', supportController.syncTicketFromSuperadmin);
 
 module.exports = router;

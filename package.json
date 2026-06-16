@@ -31,6 +31,7 @@
     "mysqldump": "^3.2.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
+    "razorpay": "^2.9.6",
     "svg-captcha": "^1.4.0"
   },
   "devDependencies": {
