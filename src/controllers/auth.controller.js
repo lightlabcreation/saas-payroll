@@ -5,6 +5,11 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { getLoginRedirect, getDashboardRoute } = require('../middlewares/role.middleware');
 
+
+
+
+
+
 /**
  * Register a new user
  */
