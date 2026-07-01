@@ -10,6 +10,10 @@ const { getLoginRedirect, getDashboardRoute } = require('../middlewares/role.mid
 
 
 
+
+
+
+
 /**
  * Register a new user
  */
